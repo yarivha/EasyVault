@@ -13,7 +13,10 @@ tls_key = ""
 
 [storage]
 type = "sqlite"                    # "sqlite" (default) or "postgres" (future)
-path = "./easyvault.db"
+# Absolute paths are used as-is. A relative path (the default) is anchored to
+# the EasyVault data dir ($EASYVAULT_HOME, else $HOME/.easyvault) so the database
+# is the same no matter which directory you launch the server from.
+path = "easyvault.db"              # -> ~/.easyvault/easyvault.db by default
 url = ""                           # postgres DSN (future)
 
 [security]

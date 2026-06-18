@@ -5,6 +5,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- **Database no longer depends on the launch directory.** The SQLite path was
+  CWD-relative (`./easyvault.db`), so launching from a different directory opened
+  a fresh, empty database — which looked like "the master account is gone, set
+  up again" every run. Relative paths now anchor to the EasyVault data dir
+  (`$EASYVAULT_HOME`, else `$HOME/.easyvault`); absolute paths are used as-is.
+  The resolved path is logged on startup and its parent dir is auto-created.
+  (Note: the instance still comes up sealed on every restart by design — that
+  requires re-unsealing, not re-creating the account.)
+
 ### Added — Vault-key rotation (crypto Flow 9)
 - **`vault::rotate_vault`** — generates a new vault key, re-encrypts every stored
   secret version, and re-wraps the key for the master escrow, each remaining

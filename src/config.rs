@@ -6,7 +6,7 @@
 // =============================================================================
 
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Top-level application configuration, mirroring config.toml.example.
 #[derive(Debug, Clone, Deserialize)]
@@ -82,10 +82,42 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             kind: "sqlite".into(),
-            path: "./easyvault.db".into(),
+            path: "easyvault.db".into(),
             url: String::new(),
         }
     }
+}
+
+impl StorageConfig {
+    // ─────────────────────────────────────────────────────────────────────────
+    // StorageConfig::resolved_path
+    // Resolve the SQLite path to an absolute, CWD-independent location. Absolute
+    // paths are used as-is; relative paths anchor to the EasyVault data dir so
+    // the database survives no matter which directory the server is launched in.
+    // ─────────────────────────────────────────────────────────────────────────
+    pub fn resolved_path(&self) -> PathBuf {
+        let p = Path::new(&self.path);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            data_dir().join(p)
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// data_dir
+// Base directory for relative storage paths: $EASYVAULT_HOME, else
+// $HOME/.easyvault, else the current directory as a last resort.
+// ─────────────────────────────────────────────────────────────────────────────
+fn data_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("EASYVAULT_HOME") {
+        return PathBuf::from(home);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return Path::new(&home).join(".easyvault");
+    }
+    PathBuf::from(".")
 }
 
 impl Default for SecurityConfig {

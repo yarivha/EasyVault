@@ -5,18 +5,25 @@
 // enables foreign keys, and applies the embedded migrations in ./migrations.
 // =============================================================================
 
-use std::str::FromStr;
+use std::path::Path;
 
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // open_sqlite
-// Open/create the SQLite database, turn on foreign keys, run migrations, and
-// return a ready connection pool.
+// Ensure the parent directory exists, open/create the SQLite database at the
+// given path, enable foreign keys, run migrations, and return a ready pool.
 // ─────────────────────────────────────────────────────────────────────────────
-pub async fn open_sqlite(path: &str) -> anyhow::Result<SqlitePool> {
-    let options = SqliteConnectOptions::from_str(&format!("sqlite://{path}"))?
+pub async fn open_sqlite(path: &Path) -> anyhow::Result<SqlitePool> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+
+    let options = SqliteConnectOptions::new()
+        .filename(path)
         .create_if_missing(true)
         .foreign_keys(true);
 

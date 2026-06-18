@@ -44,7 +44,9 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("storage type '{}' is not supported yet (only sqlite)", cfg.storage.kind);
     }
 
-    let pool = storage::open_sqlite(&cfg.storage.path).await?;
+    let db_path = cfg.storage.resolved_path();
+    tracing::info!(path = %db_path.display(), "using database");
+    let pool = storage::open_sqlite(&db_path).await?;
     let addr: SocketAddr = format!("{}:{}", cfg.server.address, cfg.server.port).parse()?;
 
     let state = AppState::new(pool, cfg);
