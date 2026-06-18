@@ -1,23 +1,27 @@
 ; ============================================================================
-; installer.nsi — Windows installer for EasyVault (built by makensis in CI)
+; installer.nsi — Windows installer for EasyVault (built by makensis on CI)
 ;
-; Invoked from the repository root, e.g.:
-;   makensis /DVERSION=0.1.0 packaging\windows\installer.nsi
-; Produces easyvault-<VERSION>-setup.exe in the working directory.
+; Built on Ubuntu via:
+;   makensis -DVERSION=<v> -DINSTALLER_NAME=<name>.exe packaging/windows/installer.nsi
+; makensis runs with the script's directory as the working dir, so File/OutFile
+; paths are relative to packaging/windows/. The CI copies easyvault.exe,
+; config.toml.example and README.md into this directory before building.
 ; ============================================================================
 
 !define APPNAME "EasyVault"
-!define COMPANY  "EasyVault"
 !ifndef VERSION
   !define VERSION "0.0.0"
+!endif
+!ifdef INSTALLER_NAME
+  OutFile "${INSTALLER_NAME}"
+!else
+  OutFile "easyvault-setup.exe"
 !endif
 
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
 
 Name "${APPNAME} ${VERSION}"
-OutFile "easyvault-${VERSION}-setup.exe"
 InstallDir "$PROGRAMFILES64\${APPNAME}"
-InstallDirRegKey HKLM "Software\${APPNAME}" "InstallDir"
 RequestExecutionLevel admin
 Unicode true
 
@@ -27,22 +31,24 @@ UninstPage uninstConfirm
 UninstPage instfiles
 
 ; ----------------------------------------------------------------------------
-; Install — copy the binary + sample config, register uninstaller & shortcut.
+; Install — copy binary + sample config + docs, register uninstaller & shortcut.
 ; ----------------------------------------------------------------------------
 Section "Install"
+  SetShellVarContext all
+  SetRegView 64
   SetOutPath "$INSTDIR"
-  File "target\release\easyvault.exe"
+  File "easyvault.exe"
   File "config.toml.example"
   File "README.md"
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
   CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\easyvault.exe"
 
-  WriteRegStr HKLM "Software\${APPNAME}" "InstallDir" "$INSTDIR"
-  WriteRegStr HKLM "${UNINSTKEY}" "DisplayName"     "${APPNAME}"
-  WriteRegStr HKLM "${UNINSTKEY}" "DisplayVersion"  "${VERSION}"
-  WriteRegStr HKLM "${UNINSTKEY}" "Publisher"       "${COMPANY}"
-  WriteRegStr HKLM "${UNINSTKEY}" "UninstallString" "$INSTDIR\uninstall.exe"
+  WriteRegStr HKLM "${UNINSTKEY}" "DisplayName"           "${APPNAME}"
+  WriteRegStr HKLM "${UNINSTKEY}" "DisplayVersion"        "${VERSION}"
+  WriteRegStr HKLM "${UNINSTKEY}" "Publisher"             "EasyVault"
+  WriteRegStr HKLM "${UNINSTKEY}" "UninstallString"       "$\"$INSTDIR\uninstall.exe$\""
+  WriteRegStr HKLM "${UNINSTKEY}" "QuietUninstallString"  "$\"$INSTDIR\uninstall.exe$\" /S"
   WriteRegDWORD HKLM "${UNINSTKEY}" "NoModify" 1
   WriteRegDWORD HKLM "${UNINSTKEY}" "NoRepair" 1
 SectionEnd
@@ -51,6 +57,8 @@ SectionEnd
 ; Uninstall — remove files, shortcut and registry keys.
 ; ----------------------------------------------------------------------------
 Section "Uninstall"
+  SetShellVarContext all
+  SetRegView 64
   Delete "$INSTDIR\easyvault.exe"
   Delete "$INSTDIR\config.toml.example"
   Delete "$INSTDIR\README.md"
@@ -59,5 +67,4 @@ Section "Uninstall"
   RMDir "$INSTDIR"
 
   DeleteRegKey HKLM "${UNINSTKEY}"
-  DeleteRegKey HKLM "Software\${APPNAME}"
 SectionEnd

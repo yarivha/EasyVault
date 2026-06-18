@@ -1,0 +1,30 @@
+# =============================================================================
+# easyvault.yaml — nfpm package definition (deb / rpm), used by the release CI.
+#
+# ARCH, VERSION and RELEASE are substituted from the environment by nfpm.
+# The binary is staged at build/bin/easyvault before packaging.
+# =============================================================================
+
+name: easyvault
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+release: ${RELEASE}
+section: utils
+priority: optional
+maintainer: "yarivha <yariv.hakim@gmail.com>"
+description: "Self-hosted, HashiCorp Vault-compatible secrets manager with envelope encryption."
+vendor: "EasyVault"
+homepage: "https://github.com/yarivha/EasyVault"
+license: "MIT"
+
+contents:
+  - src: ./build/bin/easyvault
+    dst: /usr/bin/easyvault
+    file_info:
+      mode: 0755
+  - src: ./config.toml.example
+    dst: /etc/easyvault/config.toml.example
+    type: "config|noreplace"
+  - src: ./README.md
+    dst: /usr/share/doc/easyvault/README.md

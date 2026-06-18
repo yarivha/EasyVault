@@ -9,12 +9,14 @@ repository = "https://github.com/yarivha/EasyVault"
 [dependencies]
 # Web / async runtime
 axum = "0.8"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["trace"] }
 
-# TLS
-rcgen = "0.13"
+# TLS — pin rustls + rcgen to the pure-portable `ring` backend (not aws-lc-rs)
+# so the binary cross-compiles cleanly to musl / aarch64 via cargo-zigbuild.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
 
 # Storage
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate", "chrono"] }
@@ -46,27 +48,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-# ----------------------------------------------------------------------------
-# Packaging metadata (cargo-deb / cargo-generate-rpm). Used by the release CI.
-# ----------------------------------------------------------------------------
-[package.metadata.deb]
-maintainer = "yarivha <yariv.hakim@gmail.com>"
-copyright = "2026, EasyVault contributors"
-license-file = ["LICENSE", "0"]
-extended-description = "Self-hosted, HashiCorp Vault-compatible secrets manager with envelope encryption."
-section = "utils"
-priority = "optional"
-assets = [
-    ["target/release/easyvault", "usr/bin/", "755"],
-    ["config.toml.example", "etc/easyvault/config.toml.example", "644"],
-    ["README.md", "usr/share/doc/easyvault/README.md", "644"],
-]
-
-[package.metadata.generate-rpm]
-summary = "Self-hosted, Vault-compatible secrets manager"
-assets = [
-    { source = "target/release/easyvault", dest = "/usr/bin/easyvault", mode = "755" },
-    { source = "config.toml.example", dest = "/etc/easyvault/config.toml.example", mode = "644" },
-    { source = "README.md", dest = "/usr/share/doc/easyvault/README.md", mode = "644" },
-]

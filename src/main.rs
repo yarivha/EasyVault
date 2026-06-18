@@ -60,6 +60,8 @@ async fn main() -> anyhow::Result<()> {
     let service = app.into_make_service_with_connect_info::<SocketAddr>();
 
     if let Some(pem) = tls_pem {
+        // Install the ring crypto provider (we build rustls without a default one).
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem(pem.cert, pem.key).await?;
         tracing::info!(%addr, "EasyVault listening on HTTPS (sealed until /v1/sys/unseal)");
         axum_server::bind_rustls(addr, tls_config).serve(service).await?;
