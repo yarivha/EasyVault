@@ -15,6 +15,7 @@ mod error;
 mod secrets;
 mod state;
 mod storage;
+mod tls;
 mod tokens;
 mod users;
 mod vault;
@@ -49,13 +50,24 @@ async fn main() -> anyhow::Result<()> {
     let pool = storage::open_sqlite(&db_path).await?;
     let addr: SocketAddr = format!("{}:{}", cfg.server.address, cfg.server.port).parse()?;
 
+    // Resolve TLS material before `cfg` is moved into the shared state.
+    let tls_pem = if cfg.server.tls { Some(tls::load_or_generate(&cfg)?) } else { None };
+
     let state = AppState::new(pool, cfg);
     let app = api::build_router(state);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "EasyVault listening (sealed until /v1/sys/unseal)");
     // ConnectInfo exposes the TCP peer address for IP/subnet ACL enforcement.
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    if let Some(pem) = tls_pem {
+        let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem(pem.cert, pem.key).await?;
+        tracing::info!(%addr, "EasyVault listening on HTTPS (sealed until /v1/sys/unseal)");
+        axum_server::bind_rustls(addr, tls_config).serve(service).await?;
+    } else {
+        tracing::info!(%addr, "EasyVault listening on HTTP (sealed until /v1/sys/unseal)");
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, service).await?;
+    }
 
     Ok(())
 }

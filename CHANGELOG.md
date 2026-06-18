@@ -5,6 +5,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — TLS (HTTPS)
+- **HTTPS support** (`axum-server` + rustls, `tls.rs`). Set `server.tls = true`
+  to serve over TLS. If `tls_cert`/`tls_key` are set they're loaded; otherwise a
+  self-signed cert (localhost, 127.0.0.1) is generated on first run under
+  `<data_dir>/tls`, persisted (key file `0600`), and reused on later runs.
+  `ConnectInfo` (for IP ACL) works under TLS too.
+- **Partial config tables now valid** — each config section uses
+  `#[serde(default)]`, so a `[server]` block with only some keys no longer
+  errors on missing fields.
+
 ### Fixed
 - **Database no longer depends on the launch directory.** The SQLite path was
   CWD-relative (`./easyvault.db`), so launching from a different directory opened

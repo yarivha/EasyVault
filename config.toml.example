@@ -7,8 +7,11 @@
 [server]
 address = "0.0.0.0"
 port = 8200                        # match HashiCorp Vault default
-tls = false                        # TLS termination deferred to a later increment
-tls_cert = ""                      # empty = auto self-signed (future)
+tls = false                        # set true to serve HTTPS
+# When tls = true and these are empty, a self-signed cert (localhost, 127.0.0.1)
+# is generated on first run under <data_dir>/tls and reused thereafter. Supply
+# real PEM paths for production.
+tls_cert = ""
 tls_key = ""
 
 [storage]

@@ -24,7 +24,9 @@ pub struct Config {
 }
 
 /// HTTP listener settings. TLS fields are parsed now but enforced later.
+/// Every field defaults individually so a partial `[server]` table is valid.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
     pub address: String,
     pub port: u16,
@@ -35,6 +37,7 @@ pub struct ServerConfig {
 
 /// Backing store selection. Only sqlite is wired up in this increment.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct StorageConfig {
     #[serde(rename = "type")]
     pub kind: String,
@@ -44,6 +47,7 @@ pub struct StorageConfig {
 
 /// GUI session / brute-force / proxy-trust knobs.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct SecurityConfig {
     pub session_ttl_hours: u64,
     pub max_login_attempts: u32,
@@ -53,6 +57,7 @@ pub struct SecurityConfig {
 
 /// Audit log behaviour and optional EasyLog sink.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct AuditConfig {
     pub enabled: bool,
     pub log_raw_values: bool,
@@ -61,6 +66,7 @@ pub struct AuditConfig {
 
 /// Defaults used by the /v1/sys/init ceremony.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct InitConfig {
     pub default_key_shares: u8,
     pub default_key_threshold: u8,
@@ -107,10 +113,10 @@ impl StorageConfig {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // data_dir
-// Base directory for relative storage paths: $EASYVAULT_HOME, else
+// Base directory for EasyVault state (DB, TLS material): $EASYVAULT_HOME, else
 // $HOME/.easyvault, else the current directory as a last resort.
 // ─────────────────────────────────────────────────────────────────────────────
-fn data_dir() -> PathBuf {
+pub fn data_dir() -> PathBuf {
     if let Some(home) = std::env::var_os("EASYVAULT_HOME") {
         return PathBuf::from(home);
     }
