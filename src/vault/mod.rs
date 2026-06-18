@@ -385,18 +385,130 @@ pub async fn set_acl(db: &sqlx::SqlitePool, vault_id: &str, entries: &[String]) 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// revoke
-// Remove a user's wrapped vault key. NOTE: does not yet rotate the vault key
-// (crypto Flow 9) — full re-encryption rotation is a planned follow-up.
+// revoke — crypto Flow 9 (Revoke + Key Rotation)
+// Remove the user's wrapped key, then rotate the vault key so any secret
+// material the revoked user already saw can no longer decrypt future reads.
 // ─────────────────────────────────────────────────────────────────────────────
-pub async fn revoke(db: &sqlx::SqlitePool, vault_id: &str, user_id: &str) -> Result<(), AppError> {
+pub async fn revoke(db: &sqlx::SqlitePool, vault_id: &str, user_id: &str, master_key: &[u8; 32]) -> Result<(), AppError> {
     sqlx::query("DELETE FROM vault_user_keys WHERE vault_id = ? AND user_id = ?")
         .bind(vault_id)
         .bind(user_id)
         .execute(db)
         .await?;
-    tracing::info!(%vault_id, %user_id, "vault access revoked (key rotation pending)");
+    rotate_vault(db, vault_id, master_key).await?;
+    tracing::info!(%vault_id, %user_id, "vault access revoked + key rotated");
     Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rotate_vault — crypto Flow 9 (Key Rotation)
+// Generate a new vault_key, re-encrypt every secret version, and re-wrap the
+// key everywhere it lives: master escrow, each remaining member (ephemeral
+// ECDH), and each live token (under its token_key). Done in one transaction.
+// ─────────────────────────────────────────────────────────────────────────────
+pub async fn rotate_vault(db: &sqlx::SqlitePool, vault_id: &str, master_key: &[u8; 32]) -> Result<(), AppError> {
+    let old_key = resolve_vault_key_via_master(db, vault_id, master_key).await?;
+    let new_key = Zeroizing::new(crypto::random_key());
+
+    let mut tx = db.begin().await?;
+
+    // 1. Re-encrypt every stored secret version with the new vault key.
+    let secret_rows = sqlx::query_as::<_, (String, Vec<u8>, Vec<u8>)>(
+        "SELECT id, value_enc, value_nonce FROM secrets WHERE vault_id = ?",
+    )
+    .bind(vault_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (id, enc, nonce_vec) in secret_rows {
+        let plain = decrypt_blob(&old_key, &nonce_vec, &enc)?;
+        let (nonce, new_enc) = aes::encrypt(&new_key, &plain).map_err(|e| AppError::Internal(e.to_string()))?;
+        sqlx::query("UPDATE secrets SET value_enc = ?, value_nonce = ? WHERE id = ?")
+            .bind(new_enc)
+            .bind(nonce.to_vec())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    // 2. Re-wrap the master escrow.
+    let (esc_nonce, esc_enc) = aes::encrypt(master_key, new_key.as_ref()).map_err(|e| AppError::Internal(e.to_string()))?;
+    sqlx::query("UPDATE vaults SET vault_key_enc_master = ?, vault_key_nonce_master = ? WHERE id = ?")
+        .bind(esc_enc)
+        .bind(esc_nonce.to_vec())
+        .bind(vault_id)
+        .execute(&mut *tx)
+        .await?;
+
+    // 3. Re-wrap each remaining member via a fresh ephemeral ECDH.
+    let member_rows = sqlx::query_as::<_, (String, Vec<u8>)>(
+        "SELECT k.user_id, u.public_key FROM vault_user_keys k \
+         JOIN users u ON u.id = k.user_id WHERE k.vault_id = ?",
+    )
+    .bind(vault_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (uid, public) in member_rows {
+        let mut target = [0u8; 32];
+        if public.len() != 32 {
+            return Err(AppError::Internal("corrupt member public key".into()));
+        }
+        target.copy_from_slice(&public);
+        let ephemeral = ecdh::generate_keypair();
+        let shared = ecdh::shared_secret(&ephemeral.private, &target);
+        let (nonce, enc) = aes::encrypt(&shared, new_key.as_ref()).map_err(|e| AppError::Internal(e.to_string()))?;
+        sqlx::query(
+            "UPDATE vault_user_keys SET vault_key_enc = ?, vault_key_nonce = ?, \
+             granter_public_key = ?, key_version = key_version + 1 WHERE vault_id = ? AND user_id = ?",
+        )
+        .bind(enc)
+        .bind(nonce.to_vec())
+        .bind(ephemeral.public.to_vec())
+        .bind(vault_id)
+        .bind(uid)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // 4. Re-wrap the vault key for each live token (under its token_key).
+    let token_rows = sqlx::query_as::<_, (String, Vec<u8>, Vec<u8>)>(
+        "SELECT id, token_key_enc, token_key_nonce FROM api_tokens WHERE vault_id = ? AND revoked = 0",
+    )
+    .bind(vault_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (id, tk_enc, tk_nonce) in token_rows {
+        let token_key = decrypt_blob(master_key, &tk_nonce, &tk_enc)?;
+        let mut tk = [0u8; 32];
+        if token_key.len() != 32 {
+            return Err(AppError::Internal("corrupt token key".into()));
+        }
+        tk.copy_from_slice(&token_key);
+        let (nonce, enc) = aes::encrypt(&tk, new_key.as_ref()).map_err(|e| AppError::Internal(e.to_string()))?;
+        sqlx::query("UPDATE api_tokens SET vault_key_enc = ?, vault_key_nonce = ? WHERE id = ?")
+            .bind(enc)
+            .bind(nonce.to_vec())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+
+    tx.commit().await?;
+    tracing::info!(%vault_id, "vault key rotated");
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// decrypt_blob
+// Decrypt a (nonce, ciphertext) blob with `key`, returning a zeroizing buffer.
+// ─────────────────────────────────────────────────────────────────────────────
+fn decrypt_blob(key: &[u8; 32], nonce_vec: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>, AppError> {
+    if nonce_vec.len() != crypto::NONCE_LEN {
+        return Err(AppError::Internal("corrupt nonce".into()));
+    }
+    let mut nonce = [0u8; crypto::NONCE_LEN];
+    nonce.copy_from_slice(nonce_vec);
+    let plain = aes::decrypt(key, &nonce, ciphertext).map_err(|_| AppError::Internal("rotation decrypt failed".into()))?;
+    Ok(Zeroizing::new(plain))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -372,11 +372,23 @@ pub fn vault_detail_page(d: VaultDetail<'_>) -> String {
         String::new()
     };
 
+    // Rotate-key control (assigners only).
+    let rotate = if d.can_assign {
+        format!(
+            "<form method=\"post\" action=\"/gui/vaults/{vid}/rotate\" style=\"margin-top:14px\">\
+             <button type=\"submit\" style=\"background:#30363d\">Rotate vault key</button>\
+             <span class=\"muted\"> — re-encrypts all secrets and re-wraps keys.</span></form>",
+            vid = escape(d.vault_id)
+        )
+    } else {
+        String::new()
+    };
+
     let body = format!(
         "<p><a href=\"/gui/\">&larr; Dashboard</a></p>{err}\
          <div class=\"card\"><h1>{name}</h1>{desc}</div>\
          {secrets_card}\
-         <div class=\"card\"><h2>Access</h2>{member_rows}{assign_form}</div>\
+         <div class=\"card\"><h2>Access</h2>{member_rows}{assign_form}{rotate}</div>\
          {acl_card}",
         err = err,
         name = escape(d.vault_name),
@@ -384,6 +396,7 @@ pub fn vault_detail_page(d: VaultDetail<'_>) -> String {
         secrets_card = secrets_card,
         member_rows = member_rows,
         assign_form = assign_form,
+        rotate = rotate,
         acl_card = acl_card,
     );
     layout(d.vault_name, Some(d.username), &body)

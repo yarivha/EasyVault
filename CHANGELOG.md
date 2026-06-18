@@ -5,6 +5,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — Vault-key rotation (crypto Flow 9)
+- **`vault::rotate_vault`** — generates a new vault key, re-encrypts every stored
+  secret version, and re-wraps the key for the master escrow, each remaining
+  member (fresh ephemeral ECDH, `key_version`++), and each live token (under its
+  `token_key`) — all in one transaction.
+- **`revoke` now rotates** — removing a user's access re-keys the vault so any
+  secret material they already held can't decrypt future reads (closes the
+  earlier revoke gap).
+- **Manual rotate** — master/vault-admin can rotate proactively via a button on
+  the vault page (`POST /gui/vaults/:id/rotate`).
+- Verified: after revoke+rotation, remaining members and live tokens still
+  decrypt secrets and `key_version` bumps; the revoked user gets 403.
+
 ### Added — Increment 3 (part 1): API tokens + Vault-compatible KV API
 - **Per-vault API tokens** (`tokens.rs`):
   - `create_token` (crypto Flow 7) — `ev.<base64url>`; the vault key is sealed

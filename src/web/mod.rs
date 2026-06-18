@@ -90,6 +90,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/gui/vaults/{id}/assign", post(vault_assign))
         .route("/gui/vaults/{id}/revoke", post(vault_revoke))
         .route("/gui/vaults/{id}/acl", post(vault_acl_set))
+        .route("/gui/vaults/{id}/rotate", post(vault_rotate))
         .route("/gui/vaults/{id}/secret", get(secret_view).post(secret_write))
         .route("/gui/vaults/{id}/secret/new", get(secret_new_form))
         .route("/gui/vaults/{id}/secret/delete", post(secret_delete))
@@ -433,7 +434,8 @@ async fn vault_revoke(
     if !access.can_assign() {
         return Ok(access_denied(&keys));
     }
-    vault::revoke(&state.db, &vault_id, &form.user_id).await?;
+    let mk = master_key(&state).await?;
+    vault::revoke(&state.db, &vault_id, &form.user_id, &mk).await?;
     Ok(Redirect::to(&format!("/gui/vaults/{vault_id}")).into_response())
 }
 
@@ -458,6 +460,26 @@ async fn vault_acl_set(
         Err(AppError::BadRequest(msg)) => render_vault_detail(&state, &keys, &vault_id, Some(&msg)).await,
         Err(e) => Err(e),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /gui/vaults/{id}/rotate
+// Master or vault admin rotates the vault key (crypto Flow 9), re-encrypting
+// secrets and re-wrapping the key for the escrow, members, and tokens.
+// ─────────────────────────────────────────────────────────────────────────────
+async fn vault_rotate(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let keys = guard!(auth state headers);
+    guard!(unsealed state, &keys);
+    if !load_access(&state, &keys, &vault_id).await?.can_assign() {
+        return Ok(access_denied(&keys));
+    }
+    let mk = master_key(&state).await?;
+    vault::rotate_vault(&state.db, &vault_id, &mk).await?;
+    render_vault_detail(&state, &keys, &vault_id, Some("Vault key rotated.")).await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
