@@ -3,6 +3,21 @@
 All notable changes to EasyVault are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.1.1] — 2026-06-19
+
+### Added — Linux service
+- **systemd service** — the `.deb`/`.rpm` packages now install
+  `/lib/systemd/system/easyvault.service` and, via maintainer scripts, create a
+  dedicated `easyvault` system user, the `/etc/easyvault`, `/var/lib/easyvault`
+  and `/var/log/easyvault` directories, seed `/etc/easyvault/config.toml` from
+  the example, then enable and start the service on install.
+- The service runs as the `easyvault` user with `EASYVAULT_HOME=/var/lib/easyvault`
+  (database + TLS certs) and `EASYVAULT_CONFIG=/etc/easyvault/config.toml`,
+  systemd hardening (`ProtectSystem=strict`, `NoNewPrivileges`, …), `CAP_IPC_LOCK`
+  so the master key can be `mlock`ed, and logs under `/var/log/easyvault`.
+- Removal stops/disables the service; `purge` removes data, logs and config.
+- Note: it starts **sealed** on every boot — initialize/unseal at the dashboard.
+
 ## [0.1.0] — 2026-06-18
 
 First release: a self-hosted, HashiCorp Vault–compatible secrets manager with
@@ -181,4 +196,5 @@ HMAC audit log, vault-key rotation, TLS, and a fully browser-based bootstrap.
   secret read/write → API-token REST access → IP ACL → audit + tamper detection
   → key rotation, over both HTTP and TLS.
 
+[0.1.1]: https://github.com/yarivha/EasyVault/releases/tag/v0.1.1
 [0.1.0]: https://github.com/yarivha/EasyVault/releases/tag/v0.1.0

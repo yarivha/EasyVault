@@ -1,0 +1,57 @@
+#!/bin/sh
+# postinst script
+
+APP_NAME="easyvault"
+CONFIG_DIR="/etc/easyvault"
+DATA_DIR="/var/lib/easyvault"
+LOG_DIR="/var/log/easyvault"
+
+# $1: Debian "configure"; RPM "1"/"2"; Arch a version string.
+if [ "$1" = "configure" ] || [ "$1" = "1" ] || [ "$1" = "2" ] || \
+   echo "$1" | grep -qE '^[0-9]+\.[0-9]+'; then
+
+    # 1. System user
+    if ! id -u easyvault >/dev/null 2>&1; then
+        useradd --system --no-create-home --shell /bin/false easyvault
+    fi
+
+    # 2. Directories
+    mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+
+    # 3. Seed a config from the example on first install
+    if [ ! -f "$CONFIG_DIR/config.toml" ] && [ -f "$CONFIG_DIR/config.toml.example" ]; then
+        cp "$CONFIG_DIR/config.toml.example" "$CONFIG_DIR/config.toml"
+    fi
+
+    # 4. Permissions & ownership (data/logs owned by the service user)
+    chmod 755 "$CONFIG_DIR"
+    chmod 750 "$DATA_DIR"
+    chmod 755 "$LOG_DIR"
+    chown -R easyvault:easyvault "$DATA_DIR" "$LOG_DIR"
+
+    # 5. Enable and start the service
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null 2>&1 || true
+        systemctl enable "$APP_NAME.service" >/dev/null 2>&1 || true
+        systemctl restart "$APP_NAME.service" >/dev/null 2>&1 || true
+    fi
+
+    echo "============================================================"
+    echo "        EasyVault installed and started"
+    echo "============================================================"
+    echo ""
+    echo "  Dashboard : http://localhost:8200"
+    echo "  Config    : $CONFIG_DIR/config.toml"
+    echo "  Data      : $DATA_DIR  (database + TLS certs)"
+    echo "  Logs      : $LOG_DIR/"
+    echo ""
+    echo "  EasyVault starts SEALED. Open the dashboard to initialize"
+    echo "  it (save your unseal shares!) and create the master account."
+    echo "  After every restart it comes up sealed — unseal it again at"
+    echo "  the dashboard."
+    echo ""
+    echo "  Status: systemctl status easyvault"
+    echo "============================================================"
+fi
+
+exit 0

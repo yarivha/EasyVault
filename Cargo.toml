@@ -1,6 +1,6 @@
 [package]
 name = "easyvault"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Self-hosted, Vault-compatible secrets manager with envelope encryption"
 license = "MIT"

@@ -1,0 +1,21 @@
+#!/bin/sh
+# postrm script
+
+CONFIG_DIR="/etc/easyvault"
+DATA_DIR="/var/lib/easyvault"
+LOG_DIR="/var/log/easyvault"
+
+# Full purge — destroys all secrets/data. Only on `apt purge` / rpm erase.
+if [ "$1" = "purge" ] || [ "$1" = "0" ]; then
+    rm -rf "$DATA_DIR"
+    rm -rf "$LOG_DIR"
+    rm -f "$CONFIG_DIR/config.toml"
+fi
+
+if [ "$1" = "remove" ] || [ "$1" = "0" ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

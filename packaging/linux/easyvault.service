@@ -1,0 +1,34 @@
+[Unit]
+Description=EasyVault — self-hosted secrets manager
+Documentation=https://github.com/yarivha/EasyVault
+After=network.target
+StartLimitIntervalSec=60s
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=easyvault
+Group=easyvault
+Environment=EASYVAULT_HOME=/var/lib/easyvault
+Environment=EASYVAULT_CONFIG=/etc/easyvault/config.toml
+ExecStart=/usr/bin/easyvault
+WorkingDirectory=/var/lib/easyvault
+Restart=on-failure
+RestartSec=5s
+
+# Allow locking the master key into RAM (mlock) without running as root.
+AmbientCapabilities=CAP_IPC_LOCK
+LimitMEMLOCK=infinity
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/easyvault /var/log/easyvault
+
+# Logs
+StandardOutput=append:/var/log/easyvault/easyvault.log
+StandardError=append:/var/log/easyvault/easyvault_error.log
+
+[Install]
+WantedBy=multi-user.target

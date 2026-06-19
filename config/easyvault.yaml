@@ -19,12 +19,40 @@ homepage: "https://github.com/yarivha/EasyVault"
 license: "MIT"
 
 contents:
+  # Binary
   - src: ./build/bin/easyvault
     dst: /usr/bin/easyvault
     file_info:
       mode: 0755
+
+  # systemd service
+  - src: ./packaging/linux/easyvault.service
+    dst: /lib/systemd/system/easyvault.service
+    file_info:
+      mode: 0644
+
+  # Sample config + docs
   - src: ./config.toml.example
     dst: /etc/easyvault/config.toml.example
     type: "config|noreplace"
   - src: ./README.md
     dst: /usr/share/doc/easyvault/README.md
+
+  # State directories (ownership/permissions finalized in postinst)
+  - dst: /etc/easyvault
+    type: dir
+    file_info:
+      mode: 0755
+  - dst: /var/lib/easyvault
+    type: dir
+    file_info:
+      mode: 0750
+  - dst: /var/log/easyvault
+    type: dir
+    file_info:
+      mode: 0755
+
+scripts:
+  postinstall: ./packaging/linux/postinst
+  preremove: ./packaging/linux/prerm
+  postremove: ./packaging/linux/postrm

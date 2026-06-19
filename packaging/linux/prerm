@@ -1,0 +1,14 @@
+#!/bin/sh
+# prerm script
+
+APP_NAME="easyvault"
+
+# $1: Debian "remove"/"upgrade"; RPM "0" (remove) / "1" (upgrade).
+if [ "$1" = "0" ] || [ "$1" = "remove" ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl stop "$APP_NAME.service" >/dev/null 2>&1 || true
+        systemctl disable "$APP_NAME.service" >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0
