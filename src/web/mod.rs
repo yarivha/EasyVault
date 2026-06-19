@@ -6,10 +6,11 @@
 // a dedicated middleware layer is introduced in a later increment.
 // =============================================================================
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Form, Path, Query, State};
+use axum::extract::{ConnectInfo, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -18,11 +19,46 @@ use serde::Deserialize;
 use zeroize::Zeroize;
 
 use crate::api::routes::sys;
+use crate::audit::AuditEntry;
 use crate::auth::session::{self, SessionIdentity, SessionKeys};
 use crate::error::AppError;
 use crate::state::AppState;
-use crate::vault::Role;
+use crate::vault::{Role, acl};
 use crate::{audit, secrets, tokens, users, vault};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// audit_gui
+// Best-effort audit of a GUI (session) operation. No-op while sealed (the audit
+// HMAC key is derived from the master key, which isn't in memory then).
+// ─────────────────────────────────────────────────────────────────────────────
+#[allow(clippy::too_many_arguments)]
+async fn audit_gui(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    peer: SocketAddr,
+    operation: &str,
+    vault_id: Option<&str>,
+    path: Option<&str>,
+    user_id: &str,
+    code: i64,
+) {
+    let Some(master) = state.master_key_bytes().await else { return };
+    let ip = acl::client_ip(peer, headers, &state.config.security.trusted_proxies).to_string();
+    audit::record(
+        &state.db,
+        &master,
+        AuditEntry {
+            operation,
+            vault_id,
+            path,
+            actor_type: "gui_session",
+            actor_hash: Some(user_id),
+            source_ip: Some(&ip),
+            response_code: code,
+        },
+    )
+    .await;
+}
 
 pub mod pages;
 
@@ -87,6 +123,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/gui/logout", post(logout))
         .route("/gui/users", get(users_list).post(users_create))
         .route("/gui/audit", get(audit_view))
+        .route("/gui/seal", post(seal_instance))
         .route("/gui/vaults/new", get(vault_new_form))
         .route("/gui/vaults", post(vault_create))
         .route("/gui/vaults/{id}", get(vault_detail))
@@ -265,6 +302,7 @@ async fn login_form() -> Response {
 // ─────────────────────────────────────────────────────────────────────────────
 async fn login_submit(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Form(form): Form<Credentials>,
 ) -> Result<Response, AppError> {
@@ -277,6 +315,7 @@ async fn login_submit(
     match session::authenticate(&state.db, form.username.trim(), &form.password).await? {
         Some(auth) => {
             reset_throttle(&state, &key).await;
+            audit_gui(&state, &headers, peer, "LOGIN", None, None, &auth.user_id, 200).await;
             let token = session::create_session(&state, auth, client_ip(&headers)).await?;
             Ok(redirect_with_cookie(
                 "/gui/",
@@ -489,6 +528,7 @@ async fn vault_detail(
 // ─────────────────────────────────────────────────────────────────────────────
 async fn vault_assign(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(vault_id): Path<String>,
     headers: HeaderMap,
     Form(form): Form<AssignForm>,
@@ -505,7 +545,10 @@ async fn vault_assign(
 
     let mk = master_key(&state).await?;
     match vault::assign(&state.db, &vault_id, &mk, &form.username, role, &keys.user_id).await {
-        Ok(()) => Ok(Redirect::to(&format!("/gui/vaults/{vault_id}")).into_response()),
+        Ok(()) => {
+            audit_gui(&state, &headers, peer, "GRANT", Some(&vault_id), None, &keys.user_id, 200).await;
+            Ok(Redirect::to(&format!("/gui/vaults/{vault_id}")).into_response())
+        }
         Err(AppError::BadRequest(msg)) => render_vault_detail(&state, &keys, &vault_id, Some(&msg)).await,
         Err(e) => Err(e),
     }
@@ -517,6 +560,7 @@ async fn vault_assign(
 // ─────────────────────────────────────────────────────────────────────────────
 async fn vault_revoke(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(vault_id): Path<String>,
     headers: HeaderMap,
     Form(form): Form<RevokeForm>,
@@ -529,6 +573,7 @@ async fn vault_revoke(
     }
     let mk = master_key(&state).await?;
     vault::revoke(&state.db, &vault_id, &form.user_id, &mk).await?;
+    audit_gui(&state, &headers, peer, "REVOKE", Some(&vault_id), None, &keys.user_id, 200).await;
     Ok(Redirect::to(&format!("/gui/vaults/{vault_id}")).into_response())
 }
 
@@ -562,6 +607,7 @@ async fn vault_acl_set(
 // ─────────────────────────────────────────────────────────────────────────────
 async fn vault_rotate(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(vault_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
@@ -572,6 +618,7 @@ async fn vault_rotate(
     }
     let mk = master_key(&state).await?;
     vault::rotate_vault(&state.db, &vault_id, &mk).await?;
+    audit_gui(&state, &headers, peer, "ROTATE", Some(&vault_id), None, &keys.user_id, 200).await;
     render_vault_detail(&state, &keys, &vault_id, Some("Vault key rotated.")).await
 }
 
@@ -586,6 +633,23 @@ async fn audit_view(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     let rows = audit::list(&state.db, 200).await?;
     let verified: Vec<bool> = rows.iter().map(|r| audit::verify_row(&mk, r)).collect();
     Ok(Html(pages::audit_page(&keys.username, &rows, &verified)).into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /gui/seal
+// Master-only emergency lockdown: drop the master key and seal the instance.
+// ─────────────────────────────────────────────────────────────────────────────
+async fn seal_instance(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let keys = guard!(auth state headers);
+    guard!(master &keys);
+    // Audit before sealing — afterwards the HMAC key (master key) is gone.
+    audit_gui(&state, &headers, peer, "SEAL", None, None, &keys.user_id, 200).await;
+    sys::perform_seal(&state).await?;
+    Ok(Redirect::to("/gui/unseal").into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -613,6 +677,7 @@ async fn secret_new_form(
 // ─────────────────────────────────────────────────────────────────────────────
 async fn secret_write(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(vault_id): Path<String>,
     headers: HeaderMap,
     Form(form): Form<SecretForm>,
@@ -645,7 +710,10 @@ async fn secret_write(
     let result = secrets::write(&state.db, &vault_id, &form.path, &value, &vault_key, &keys.user_id).await;
     vault_key.zeroize();
     match result {
-        Ok(_) => Ok(Redirect::to(&format!("/gui/vaults/{}/secret?path={}", vault_id, urlencode(form.path.trim()))).into_response()),
+        Ok(_) => {
+            audit_gui(&state, &headers, peer, "WRITE", Some(&vault_id), Some(form.path.trim()), &keys.user_id, 200).await;
+            Ok(Redirect::to(&format!("/gui/vaults/{}/secret?path={}", vault_id, urlencode(form.path.trim()))).into_response())
+        }
         Err(AppError::BadRequest(msg)) => Ok((
             StatusCode::BAD_REQUEST,
             Html(pages::secret_new_page(&keys.username, &vault_id, &v.name, Some(&msg), &form.path, &form.data)),
@@ -661,6 +729,7 @@ async fn secret_write(
 // ─────────────────────────────────────────────────────────────────────────────
 async fn secret_view(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(vault_id): Path<String>,
     headers: HeaderMap,
     Query(q): Query<PathParam>,
@@ -682,8 +751,12 @@ async fn secret_view(
 
     let (version, value) = match latest? {
         Some(pair) => pair,
-        None => return Ok(Html(pages::notice_page(Some(keys.username.as_str()), "Secret not found", "No live version exists for that path.")).into_response()),
+        None => {
+            audit_gui(&state, &headers, peer, "READ", Some(&vault_id), Some(&q.path), &keys.user_id, 404).await;
+            return Ok(Html(pages::notice_page(Some(keys.username.as_str()), "Secret not found", "No live version exists for that path.")).into_response());
+        }
     };
+    audit_gui(&state, &headers, peer, "READ", Some(&vault_id), Some(&q.path), &keys.user_id, 200).await;
     let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into());
     let versions = secrets::versions(&state.db, &vault_id, &q.path).await?;
     Ok(Html(pages::secret_view_page(&keys.username, &vault_id, &v.name, &q.path, version, &pretty, &versions)).into_response())
@@ -695,6 +768,7 @@ async fn secret_view(
 // ─────────────────────────────────────────────────────────────────────────────
 async fn secret_delete(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(vault_id): Path<String>,
     headers: HeaderMap,
     Form(form): Form<PathParam>,
@@ -705,6 +779,7 @@ async fn secret_delete(
         return Ok(access_denied(&keys));
     }
     secrets::soft_delete(&state.db, &vault_id, &form.path).await?;
+    audit_gui(&state, &headers, peer, "DELETE", Some(&vault_id), Some(form.path.trim()), &keys.user_id, 200).await;
     Ok(Redirect::to(&format!("/gui/vaults/{vault_id}")).into_response())
 }
 

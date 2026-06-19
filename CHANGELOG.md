@@ -3,6 +3,18 @@
 All notable changes to EasyVault are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added — full audit coverage + emergency seal
+- **GUI actions are now audited** too (not just the token API): secret `READ`
+  (incl. 404), `WRITE`, `DELETE`, plus `LOGIN`, `GRANT`, `REVOKE`, `ROTATE` and
+  `SEAL` — recorded with `actor_type = gui_session` and the acting user, the
+  same HMAC-signed rows shown in `/gui/audit`.
+- **Re-seal** (`POST /gui/seal`, master only) — an emergency lockdown that drops
+  the master key from memory and seals the instance immediately (the `SEAL`
+  event is audited just before the key is wiped). Surfaced as a "Seal instance"
+  button on the dashboard; the API core is `sys::perform_seal`.
+
 ## [0.1.1] — 2026-06-19
 
 ### Added — Linux service

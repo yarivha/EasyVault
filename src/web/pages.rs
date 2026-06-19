@@ -216,6 +216,15 @@ pub fn dashboard_page(username: &str, is_master: bool, sealed: bool, vaults: &[V
     } else {
         ""
     };
+    // Emergency lockdown control (master only, when unsealed).
+    let seal_button = if is_master && !sealed {
+        "<form method=\"post\" action=\"/gui/seal\" style=\"margin-top:10px\" \
+         onsubmit=\"return confirm('Seal the instance? All secret access stops until it is unsealed again.');\">\
+         <button type=\"submit\" style=\"background:#6e2330\">Seal instance</button>\
+         <span class=\"muted\"> — drops the master key from memory.</span></form>"
+    } else {
+        ""
+    };
 
     let vault_rows = if vaults.is_empty() {
         "<p class=\"muted\">No vaults yet.</p>".to_string()
@@ -239,7 +248,7 @@ pub fn dashboard_page(username: &str, is_master: bool, sealed: bool, vaults: &[V
          <div class=\"grid\">\
          <div class=\"kv\"><div class=\"k\">Instance</div><div class=\"v\">{seal}</div></div>\
          <div class=\"kv\"><div class=\"k\">Your vaults</div><div class=\"v\">{count}</div></div>\
-         </div>{seal_note}{admin_link}</div>\
+         </div>{seal_note}{admin_link}{seal_button}</div>\
          <div class=\"card\"><div style=\"display:flex;justify-content:space-between;align-items:center\">\
          <h2 style=\"margin:0\">Vaults</h2>{new_vault}</div>{vault_rows}</div>",
         user = escape(username),
@@ -248,6 +257,7 @@ pub fn dashboard_page(username: &str, is_master: bool, sealed: bool, vaults: &[V
         count = vaults.len(),
         seal_note = seal_note,
         admin_link = admin_link,
+        seal_button = seal_button,
         new_vault = new_vault,
         vault_rows = vault_rows,
     );

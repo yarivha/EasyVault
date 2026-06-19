@@ -210,6 +210,21 @@ pub async fn add_unseal_share(state: &Arc<AppState>, key_b64: &str) -> Result<()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// perform_seal
+// Drop the master key from memory and mark the instance sealed — an immediate
+// lockdown that blocks all secret operations until it is unsealed again.
+// ─────────────────────────────────────────────────────────────────────────────
+pub async fn perform_seal(state: &Arc<AppState>) -> Result<(), AppError> {
+    *state.master_key.write().await = None;
+    state.unseal_progress.write().await.clear();
+    sqlx::query("UPDATE system_init SET sealed = 1 WHERE id = 1")
+        .execute(&state.db)
+        .await?;
+    tracing::warn!("EasyVault sealed");
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /v1/sys/init
 // Generate the master key, split it into Shamir shares, and store the
 // verification ciphertext. Returns the shares once; instance stays sealed.
