@@ -38,10 +38,18 @@ pub struct MetadataQuery {
     pub list: bool,
 }
 
-/// KV v2 write body: `{"data": { ... }}`.
+/// KV v2 write body: `{"data": {...}, "options": {"max_reads": N}}`.
 #[derive(Debug, Deserialize)]
 pub struct WriteBody {
     pub data: serde_json::Value,
+    #[serde(default)]
+    pub options: Option<WriteOptions>,
+}
+
+/// Write options. `max_reads` makes the version single/N-use (burn after read).
+#[derive(Debug, Deserialize)]
+pub struct WriteOptions {
+    pub max_reads: Option<i64>,
 }
 
 /// Resolved request context after auth + ACL checks.
@@ -165,12 +173,13 @@ pub async fn read(
         Ok(c) => c,
         Err(resp) => return Ok(resp),
     };
-    match secrets::read_latest(&state.db, &ctx.auth.vault_id, &path, &ctx.auth.vault_key).await? {
-        Some((version, value)) => {
+    // Consuming read — single/N-use secrets burn here.
+    match secrets::read_and_consume(&state.db, &ctx.auth.vault_id, &path, &ctx.auth.vault_key).await? {
+        Some((version, value, remaining)) => {
             audit_ok(&state, &ctx, "READ", &path, 200).await;
             Ok(Json(VaultResponse::new(json!({
                 "data": value,
-                "metadata": { "version": version, "destroyed": false }
+                "metadata": { "version": version, "destroyed": false, "reads_remaining": remaining }
             })))
             .into_response())
         }
@@ -197,7 +206,8 @@ pub async fn write(
         Err(resp) => return Ok(resp),
     };
     let creator = ctx.auth.created_by.as_deref().ok_or_else(|| AppError::Internal("token has no owner".into()))?;
-    let version = secrets::write(&state.db, &ctx.auth.vault_id, &path, &body.data, &ctx.auth.vault_key, creator).await?;
+    let max_reads = body.options.and_then(|o| o.max_reads);
+    let version = secrets::write(&state.db, &ctx.auth.vault_id, &path, &body.data, &ctx.auth.vault_key, creator, max_reads).await?;
     audit_ok(&state, &ctx, "WRITE", &path, 200).await;
     Ok(Json(VaultResponse::new(json!({ "version": version, "destroyed": false }))).into_response())
 }

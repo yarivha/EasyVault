@@ -376,6 +376,8 @@ pub struct RevokeForm {
 pub struct SecretForm {
     pub path: String,
     pub data: String,
+    #[serde(default)]
+    pub max_reads: String,
 }
 
 /// Single-path form/query fields (view, delete, prefill).
@@ -755,13 +757,27 @@ async fn secret_write(
         }
     };
 
+    let max_reads = match form.max_reads.trim() {
+        "" => None,
+        n => match n.parse::<i64>() {
+            Ok(v) if v >= 1 => Some(v),
+            _ => {
+                return Ok((
+                    StatusCode::BAD_REQUEST,
+                    Html(pages::secret_new_page(&keys.username, &vault_id, &v.name, Some("Max reads must be a positive number (or blank for unlimited)."), &form.path, &form.data)),
+                )
+                    .into_response());
+            }
+        },
+    };
+
     let mut vault_key = match vault::resolve_vault_key(&state.db, &vault_id, &keys.user_id, &keys.private_key).await {
         Ok(k) => k,
         Err(AppError::Forbidden) => return Ok(access_denied(&keys)),
         Err(e) => return Err(e),
     };
 
-    let result = secrets::write(&state.db, &vault_id, &form.path, &value, &vault_key, &keys.user_id).await;
+    let result = secrets::write(&state.db, &vault_id, &form.path, &value, &vault_key, &keys.user_id, max_reads).await;
     vault_key.zeroize();
     match result {
         Ok(_) => {
@@ -813,7 +829,8 @@ async fn secret_view(
     audit_gui(&state, &headers, peer, "READ", Some(&vault_id), Some(&q.path), &keys.user_id, 200).await;
     let pretty = serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".into());
     let versions = secrets::versions(&state.db, &vault_id, &q.path).await?;
-    Ok(Html(pages::secret_view_page(&keys.username, &vault_id, &v.name, &q.path, version, &pretty, &versions)).into_response())
+    let remaining = secrets::reads_remaining(&state.db, &vault_id, &q.path).await?;
+    Ok(Html(pages::secret_view_page(&keys.username, &vault_id, &v.name, &q.path, version, &pretty, &versions, remaining)).into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -66,7 +66,7 @@ async fn vault_assign_and_cross_user_secret_access() {
 
     // Editor writes a secret with the resolved vault key.
     let vkey = vault::resolve_vault_key(&db, &vault_id, &edith_id, &edith_priv).await.unwrap();
-    secrets::write(&db, &vault_id, "db/pg", &json!({"password": "hunter2"}), &vkey, &edith_id).await.unwrap();
+    secrets::write(&db, &vault_id, "db/pg", &json!({"password": "hunter2"}), &vkey, &edith_id, None).await.unwrap();
 
     // Viewer recovers the SAME vault key via their own private key and decrypts.
     let victor_id = users::get_by_username(&db, "victor").await.unwrap().unwrap().id;
@@ -95,8 +95,8 @@ async fn secret_versioning() {
     vault::assign(&db, &vid, &master_key, "m", Role::Editor, &mid).await.unwrap_err(); // master can't be a member
     let vkey = vault::resolve_vault_key_via_master(&db, &vid, &master_key).await.unwrap();
 
-    secrets::write(&db, &vid, "k", &json!({"v": 1}), &vkey, &mid).await.unwrap();
-    let v2 = secrets::write(&db, &vid, "k", &json!({"v": 2}), &vkey, &mid).await.unwrap();
+    secrets::write(&db, &vid, "k", &json!({"v": 1}), &vkey, &mid, None).await.unwrap();
+    let v2 = secrets::write(&db, &vid, "k", &json!({"v": 2}), &vkey, &mid, None).await.unwrap();
     assert_eq!(v2, 2);
     let (ver, value) = secrets::read_latest(&db, &vid, "k", &vkey).await.unwrap().unwrap();
     assert_eq!(ver, 2);
@@ -117,7 +117,7 @@ async fn token_create_authenticate_revoke() {
     let ed_id = users::get_by_username(&db, "ed").await.unwrap().unwrap().id;
     let ed_priv = private_key(&db, "ed", "edpassword").await;
     let vkey = vault::resolve_vault_key(&db, &vid, &ed_id, &ed_priv).await.unwrap();
-    secrets::write(&db, &vid, "db/pg", &json!({"p": "s3cret"}), &vkey, &ed_id).await.unwrap();
+    secrets::write(&db, &vid, "db/pg", &json!({"p": "s3cret"}), &vkey, &ed_id, None).await.unwrap();
 
     let raw = tokens::create_token(&db, &vid, &ed_id, &ed_priv, &master_key, "ci", &["db/*".into()], &[], None).await.unwrap();
     assert!(raw.starts_with("ev."));
@@ -185,7 +185,7 @@ async fn rotation_preserves_access() {
     let ed_id = users::get_by_username(&db, "ed").await.unwrap().unwrap().id;
     let ed_priv = private_key(&db, "ed", "edpassword").await;
     let vkey = vault::resolve_vault_key(&db, &vid, &ed_id, &ed_priv).await.unwrap();
-    secrets::write(&db, &vid, "k", &json!({"v": "x"}), &vkey, &ed_id).await.unwrap();
+    secrets::write(&db, &vid, "k", &json!({"v": "x"}), &vkey, &ed_id, None).await.unwrap();
     let raw = tokens::create_token(&db, &vid, &ed_id, &ed_priv, &master_key, "t", &["*".into()], &[], None).await.unwrap();
 
     vault::rotate_vault(&db, &vid, &master_key).await.unwrap();
@@ -202,6 +202,40 @@ async fn rotation_preserves_access() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// burn-after-read: a single/N-use secret is destroyed once its reads run out
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn single_use_secret_burns_after_read() {
+    let db = test_pool().await;
+    let master_key = crypto::random_key();
+    let mid = users::create_user(&db, "m", "masterpass", true).await.unwrap();
+    let vid = vault::create_vault(&db, "v", "", &mid, &master_key).await.unwrap();
+    let vkey = vault::resolve_vault_key_via_master(&db, &vid, &master_key).await.unwrap();
+
+    // max_reads = 2: two consuming reads, then it's gone.
+    secrets::write(&db, &vid, "otp", &json!({"code": "123456"}), &vkey, &mid, Some(2)).await.unwrap();
+
+    let (_, v1, rem1) = secrets::read_and_consume(&db, &vid, "otp", &vkey).await.unwrap().unwrap();
+    assert_eq!(v1["code"], "123456");
+    assert_eq!(rem1, Some(1));
+
+    let (_, v2, rem2) = secrets::read_and_consume(&db, &vid, "otp", &vkey).await.unwrap().unwrap();
+    assert_eq!(v2["code"], "123456");
+    assert_eq!(rem2, Some(0));
+
+    // Burned: no more live version on either read path.
+    assert!(secrets::read_and_consume(&db, &vid, "otp", &vkey).await.unwrap().is_none());
+    assert!(secrets::read_latest(&db, &vid, "otp", &vkey).await.unwrap().is_none());
+
+    // An unlimited secret never burns.
+    secrets::write(&db, &vid, "static", &json!({"k": "v"}), &vkey, &mid, None).await.unwrap();
+    for _ in 0..5 {
+        let (_, _, rem) = secrets::read_and_consume(&db, &vid, "static", &vkey).await.unwrap().unwrap();
+        assert_eq!(rem, None);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AppRole: role + secret-id → login mints a scoped, working per-vault token
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]
@@ -215,7 +249,7 @@ async fn approle_login_mints_scoped_token() {
     let ed_id = users::get_by_username(&db, "ed").await.unwrap().unwrap().id;
     let ed_priv = private_key(&db, "ed", "edpassword").await;
     let vkey = vault::resolve_vault_key(&db, &vid, &ed_id, &ed_priv).await.unwrap();
-    secrets::write(&db, &vid, "db/pg", &json!({"password": "hunter2"}), &vkey, &ed_id).await.unwrap();
+    secrets::write(&db, &vid, "db/pg", &json!({"password": "hunter2"}), &vkey, &ed_id, None).await.unwrap();
 
     let role_id = approle::create_role(&db, &vid, "ci", &["db/*".into()], &[], Some(3600), &ed_id).await.unwrap();
     let internal = approle::get_by_role_id(&db, &role_id).await.unwrap().unwrap().id;
@@ -252,7 +286,7 @@ async fn password_change_preserves_vault_access() {
     vault::assign(&db, &vid, &master_key, "ed", Role::Editor, &mid).await.unwrap();
     let ed_id = users::get_by_username(&db, "ed").await.unwrap().unwrap().id;
     let vkey = vault::resolve_vault_key(&db, &vid, &ed_id, &private_key(&db, "ed", "oldpassword").await).await.unwrap();
-    secrets::write(&db, &vid, "k", &json!({"v": "keep"}), &vkey, &ed_id).await.unwrap();
+    secrets::write(&db, &vid, "k", &json!({"v": "keep"}), &vkey, &ed_id, None).await.unwrap();
 
     // Wrong current password is rejected; correct one succeeds.
     assert!(users::change_password(&db, &ed_id, "WRONG", "newpassword1").await.is_err());

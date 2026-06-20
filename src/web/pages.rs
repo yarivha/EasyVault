@@ -807,6 +807,8 @@ pub fn secret_new_page(username: &str, vault_id: &str, vault_name: &str, error: 
          <textarea name=\"data\" rows=\"6\" style=\"width:100%;font-family:ui-monospace,monospace;\
          padding:10px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--fg)\" \
          placeholder='{{\"password\": \"s3cr3t\"}}' required>{data}</textarea>\
+         <label>Max reads (blank = unlimited; 1 = single-use, burns after one read)</label>\
+         <input name=\"max_reads\" type=\"number\" min=\"1\" placeholder=\"unlimited\">\
          <button type=\"submit\">Save secret</button></form></div>",
         vid = escape(vault_id),
         name = escape(vault_name),
@@ -821,6 +823,7 @@ pub fn secret_new_page(username: &str, vault_id: &str, vault_name: &str, error: 
 // secret_view_page
 // Show a decrypted secret's current value plus its version history.
 // ─────────────────────────────────────────────────────────────────────────────
+#[allow(clippy::too_many_arguments)]
 pub fn secret_view_page(
     username: &str,
     vault_id: &str,
@@ -829,7 +832,16 @@ pub fn secret_view_page(
     version: i64,
     pretty_json: &str,
     versions: &[crate::secrets::SecretVersion],
+    reads_remaining: Option<i64>,
 ) -> String {
+    // Single/N-use badge + note (GUI viewing does not consume; the token API does).
+    let use_note = match reads_remaining {
+        Some(n) => format!(
+            "<p><span class=\"pill warn\">single-use</span> <span class=\"muted\">{n} read(s) remaining over the API — \
+             the next API fetch consumes it. Viewing here does not.</span></p>"
+        ),
+        None => String::new(),
+    };
     let mut vrows = String::from("<table><tr><th>Version</th><th>Created</th><th>State</th></tr>");
     for v in versions {
         vrows.push_str(&format!(
@@ -843,7 +855,7 @@ pub fn secret_view_page(
 
     let body = format!(
         "<p><a href=\"/gui/vaults/{vid}\">&larr; {name}</a></p>\
-         <div class=\"card\"><h1>{path}</h1><h2>Current value (v{ver})</h2>\
+         <div class=\"card\"><h1>{path}</h1>{use_note}<h2>Current value (v{ver})</h2>\
          <pre style=\"background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;\
          overflow:auto;color:var(--fg)\">{json}</pre>\
          <div style=\"display:flex;gap:10px\">\
@@ -859,6 +871,7 @@ pub fn secret_view_page(
         ver = version,
         json = escape(pretty_json),
         vrows = vrows,
+        use_note = use_note,
     );
     layout(path, Some(username), &body)
 }

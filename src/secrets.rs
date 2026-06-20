@@ -40,10 +40,16 @@ pub async fn write(
     value: &serde_json::Value,
     vault_key: &[u8; 32],
     created_by: &str,
+    max_reads: Option<i64>,
 ) -> Result<i64, AppError> {
     let path = path.trim();
     if path.is_empty() {
         return Err(AppError::BadRequest("secret path is required".into()));
+    }
+    if let Some(n) = max_reads {
+        if n < 1 {
+            return Err(AppError::BadRequest("max reads must be at least 1".into()));
+        }
     }
 
     let mut json = serde_json::to_vec(value).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -59,8 +65,8 @@ pub async fn write(
     .await?;
 
     sqlx::query(
-        "INSERT INTO secrets (id, vault_id, path, version, value_enc, value_nonce, created_by) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO secrets (id, vault_id, path, version, value_enc, value_nonce, max_reads, created_by) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(Uuid::new_v4().to_string())
     .bind(vault_id)
@@ -68,11 +74,27 @@ pub async fn write(
     .bind(next)
     .bind(value_enc)
     .bind(nonce.to_vec())
+    .bind(max_reads)
     .bind(created_by)
     .execute(db)
     .await?;
 
     Ok(next)
+}
+
+/// Remaining reads for the latest live version of a path (None = unlimited or
+/// no live version).
+pub async fn reads_remaining(db: &sqlx::SqlitePool, vault_id: &str, path: &str) -> Result<Option<i64>, AppError> {
+    let row = sqlx::query_as::<_, (Option<i64>, i64)>(
+        "SELECT max_reads, read_count FROM secrets \
+         WHERE vault_id = ? AND path = ? AND destroyed = 0 AND deleted_at IS NULL \
+         ORDER BY version DESC LIMIT 1",
+    )
+    .bind(vault_id)
+    .bind(path)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.and_then(|(max, count)| max.map(|m| (m - count).max(0))))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -142,6 +164,79 @@ pub async fn read_latest(
         serde_json::from_slice(&plain).map_err(|e| AppError::Internal(e.to_string()))?;
     plain.zeroize();
     Ok(Some((version, value)))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// read_and_consume
+// Like read_latest, but counts the read against a single/N-use cap: increments
+// read_count and, when the cap is reached, destroys the version and wipes its
+// ciphertext (burn after read). Returns (version, value, reads_remaining) where
+// remaining is None for unlimited secrets. Used by the token API path.
+// ─────────────────────────────────────────────────────────────────────────────
+pub async fn read_and_consume(
+    db: &sqlx::SqlitePool,
+    vault_id: &str,
+    path: &str,
+    vault_key: &[u8; 32],
+) -> Result<Option<(i64, serde_json::Value, Option<i64>)>, AppError> {
+    let mut tx = db.begin().await?;
+    let row = sqlx::query_as::<_, (String, i64, Vec<u8>, Vec<u8>, Option<i64>, i64)>(
+        "SELECT id, version, value_enc, value_nonce, max_reads, read_count FROM secrets \
+         WHERE vault_id = ? AND path = ? AND destroyed = 0 AND deleted_at IS NULL \
+         ORDER BY version DESC LIMIT 1",
+    )
+    .bind(vault_id)
+    .bind(path)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let Some((id, version, value_enc, nonce_vec, max_reads, read_count)) = row else {
+        return Ok(None);
+    };
+    if nonce_vec.len() != crypto::NONCE_LEN {
+        return Err(AppError::Internal("corrupt secret nonce".into()));
+    }
+    let mut nonce = [0u8; crypto::NONCE_LEN];
+    nonce.copy_from_slice(&nonce_vec);
+    let mut plain = aes::decrypt(vault_key, &nonce, &value_enc)
+        .map_err(|_| AppError::Internal("failed to decrypt secret".into()))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&plain).map_err(|e| AppError::Internal(e.to_string()))?;
+    plain.zeroize();
+
+    let new_count = read_count + 1;
+    let remaining = match max_reads {
+        None => {
+            // Unlimited — still bump the counter for visibility.
+            sqlx::query("UPDATE secrets SET read_count = ? WHERE id = ?")
+                .bind(new_count)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            None
+        }
+        Some(cap) if new_count >= cap => {
+            // Last allowed read — burn: destroy + wipe the ciphertext.
+            sqlx::query(
+                "UPDATE secrets SET read_count = ?, destroyed = 1, value_enc = x'', value_nonce = x'' WHERE id = ?",
+            )
+            .bind(new_count)
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+            Some(0)
+        }
+        Some(cap) => {
+            sqlx::query("UPDATE secrets SET read_count = ? WHERE id = ?")
+                .bind(new_count)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await?;
+            Some(cap - new_count)
+        }
+    };
+    tx.commit().await?;
+    Ok(Some((version, value, remaining)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

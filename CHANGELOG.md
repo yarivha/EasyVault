@@ -5,6 +5,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — single-use / N-use secrets (burn after read)
+- A secret can cap how many times it may be fetched over the token API. Set
+  **Max reads** when writing (GUI field, or `{"options":{"max_reads":N}}` on the
+  KV write API). After the Nth read the version is **destroyed and its ciphertext
+  wiped** — the next fetch returns 404. Read responses include
+  `metadata.reads_remaining`. Useful for one-time credentials / OTP handoff.
+- GUI viewing does **not** consume a use (it's management inspection); the secret
+  view page shows a "single-use" badge with reads remaining. Migration 005 adds
+  `secrets.max_reads` + `read_count`.
+
 ### Changed — network ACL is per-token, not per-vault
 - Removed the vault-level network ACL. IP/CIDR restrictions now live **on each
   token and AppRole** (their `allowed_ips`) — you say where a credential may be
