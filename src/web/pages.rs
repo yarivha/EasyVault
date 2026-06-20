@@ -398,12 +398,20 @@ pub struct VaultDetail<'a> {
     pub vault_name: &'a str,
     pub description: &'a str,
     pub secrets: &'a [crate::secrets::SecretListing],
-    pub members: &'a [crate::vault::VaultMember],
-    pub current_user_id: &'a str,
-    pub acl_entries: &'a [String],
     pub can_read: bool,
     pub can_write: bool,
     pub can_assign: bool,
+    pub error: Option<&'a str>,
+}
+
+/// Inputs for `vault_settings_page` (management: members, ACL, key rotation).
+pub struct VaultSettings<'a> {
+    pub username: &'a str,
+    pub vault_id: &'a str,
+    pub vault_name: &'a str,
+    pub members: &'a [crate::vault::VaultMember],
+    pub current_user_id: &'a str,
+    pub acl_entries: &'a [String],
     pub error: Option<&'a str>,
 }
 
@@ -455,15 +463,52 @@ pub fn vault_detail_page(d: VaultDetail<'_>) -> String {
             .to_string()
     };
 
-    // Member listing, with role and (for assigners) a revoke control.
+    let desc_html = if d.description.is_empty() {
+        String::new()
+    } else {
+        format!("<p class=\"muted\">{}</p>", escape(d.description))
+    };
+
+    // Managers (master / vault admins) get a Settings link for access, ACL, rotation.
+    let settings_btn = if d.can_assign {
+        format!(
+            "<a href=\"/gui/vaults/{vid}/settings\"><button type=\"button\" class=\"btn-neutral\">Settings</button></a>",
+            vid = escape(d.vault_id)
+        )
+    } else {
+        String::new()
+    };
+
+    let body = format!(
+        "<p><a href=\"/gui/\">&larr; Dashboard</a></p>{err}\
+         <div class=\"card\"><div style=\"display:flex;justify-content:space-between;align-items:center\">\
+         <h1 style=\"margin:0\">{name}</h1>{settings_btn}</div>{desc}</div>\
+         {secrets_card}",
+        err = err,
+        name = escape(d.vault_name),
+        settings_btn = settings_btn,
+        desc = desc_html,
+        secrets_card = secrets_card,
+    );
+    layout(d.vault_name, Some(d.username), &body)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// vault_settings_page
+// Vault management (master / vault admins): member access (assign/revoke),
+// network ACL, and key rotation.
+// ─────────────────────────────────────────────────────────────────────────────
+pub fn vault_settings_page(s: VaultSettings<'_>) -> String {
+    let err = s.error.map(|e| format!("<div class=\"err\">{}</div>", escape(e))).unwrap_or_default();
+
     let mut member_rows = String::from("<table><tr><th>User</th><th>Role</th><th>Granted</th><th></th></tr>");
-    for m in d.members {
-        let revoke = if d.can_assign && m.user_id != d.current_user_id {
+    for m in s.members {
+        let revoke = if m.user_id != s.current_user_id {
             format!(
                 "<form method=\"post\" action=\"/gui/vaults/{vid}/revoke\" style=\"margin:0\">\
                  <input type=\"hidden\" name=\"user_id\" value=\"{uid}\">\
                  <button class=\"link\" type=\"submit\">revoke</button></form>",
-                vid = escape(d.vault_id),
+                vid = escape(s.vault_id),
                 uid = escape(&m.user_id),
             )
         } else {
@@ -479,79 +524,46 @@ pub fn vault_detail_page(d: VaultDetail<'_>) -> String {
     }
     member_rows.push_str("</table>");
 
-    // Assign form (username + role) for master / vault admins.
-    let assign_form = if d.can_assign {
-        format!(
-            "<form method=\"post\" action=\"/gui/vaults/{vid}/assign\" \
-             style=\"display:flex;gap:8px;align-items:flex-end;margin-top:8px\">\
-             <div style=\"flex:1\"><label style=\"margin-top:0\">Assign username</label>\
-             <input name=\"username\" required></div>\
-             <div><label style=\"margin-top:0\">Role</label>\
-             <select name=\"role\" style=\"padding:10px 12px;border:1px solid var(--border);border-radius:7px;\
-             background:var(--bg);color:var(--fg)\">\
-             <option value=\"viewer\">viewer</option>\
-             <option value=\"editor\">editor</option>\
-             <option value=\"admin\">admin</option></select></div>\
-             <button type=\"submit\" style=\"margin:0\">Assign</button></form>",
-            vid = escape(d.vault_id)
-        )
-    } else {
-        String::new()
-    };
+    let assign_form = format!(
+        "<form method=\"post\" action=\"/gui/vaults/{vid}/assign\" \
+         style=\"display:flex;gap:8px;align-items:flex-end;margin-top:8px\">\
+         <div style=\"flex:1\"><label style=\"margin-top:0\">Assign username</label>\
+         <input name=\"username\" required></div>\
+         <div><label style=\"margin-top:0\">Role</label>\
+         <select name=\"role\" style=\"padding:10px 12px;border:1px solid var(--border);border-radius:7px;\
+         background:var(--bg);color:var(--fg)\">\
+         <option value=\"viewer\">viewer</option>\
+         <option value=\"editor\">editor</option>\
+         <option value=\"admin\">admin</option></select></div>\
+         <button type=\"submit\" style=\"margin:0\">Assign</button></form>",
+        vid = escape(s.vault_id)
+    );
 
-    let desc_html = if d.description.is_empty() {
-        String::new()
-    } else {
-        format!("<p class=\"muted\">{}</p>", escape(d.description))
-    };
-
-    // Network ACL card (assigners only): a textarea of IP/CIDR entries.
-    let acl_card = if d.can_assign {
-        let current = d.acl_entries.join("\n");
-        format!(
-            "<div class=\"card\"><h2>Network ACL</h2>\
-             <p class=\"muted\">Restrict which client IPs/subnets may use this vault's tokens. \
-             Blank = no restriction.</p>\
-             <form method=\"post\" action=\"/gui/vaults/{vid}/acl\">\
-             <textarea name=\"entries\" rows=\"3\" style=\"width:100%;font-family:ui-monospace,monospace;\
-             padding:10px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--fg)\" \
-             placeholder=\"10.0.0.0/8&#10;1.2.3.4\">{current}</textarea>\
-             <button type=\"submit\">Save ACL</button></form></div>",
-            vid = escape(d.vault_id),
-            current = escape(&current),
-        )
-    } else {
-        String::new()
-    };
-
-    // Rotate-key control (assigners only).
-    let rotate = if d.can_assign {
-        format!(
-            "<form method=\"post\" action=\"/gui/vaults/{vid}/rotate\" style=\"margin-top:14px\">\
-             <button type=\"submit\" class=\"btn-neutral\">Rotate vault key</button>\
-             <span class=\"muted\"> — re-encrypts all secrets and re-wraps keys.</span></form>",
-            vid = escape(d.vault_id)
-        )
-    } else {
-        String::new()
-    };
-
+    let acl_current = s.acl_entries.join("\n");
     let body = format!(
-        "<p><a href=\"/gui/\">&larr; Dashboard</a></p>{err}\
-         <div class=\"card\"><h1>{name}</h1>{desc}</div>\
-         {secrets_card}\
-         <div class=\"card\"><h2>Access</h2>{member_rows}{assign_form}{rotate}</div>\
-         {acl_card}",
+        "<p><a href=\"/gui/vaults/{vid}\">&larr; {name}</a></p>{err}\
+         <div class=\"card\"><h1>{name} — settings</h1></div>\
+         <div class=\"card\"><h2>Access</h2>{member_rows}{assign_form}</div>\
+         <div class=\"card\"><h2>Network ACL</h2>\
+         <p class=\"muted\">Restrict which client IPs/subnets may use this vault's tokens. Blank = no restriction.</p>\
+         <form method=\"post\" action=\"/gui/vaults/{vid}/acl\">\
+         <textarea name=\"entries\" rows=\"3\" style=\"width:100%;font-family:ui-monospace,monospace;\
+         padding:10px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--fg)\" \
+         placeholder=\"10.0.0.0/8&#10;1.2.3.4\">{acl}</textarea>\
+         <button type=\"submit\">Save ACL</button></form></div>\
+         <div class=\"card\"><h2>Key rotation</h2>\
+         <p class=\"muted\">Generate a new vault key, re-encrypt every secret, and re-wrap the key for \
+         all members and live tokens.</p>\
+         <form method=\"post\" action=\"/gui/vaults/{vid}/rotate\">\
+         <button type=\"submit\" class=\"btn-neutral\">Rotate vault key</button></form></div>",
+        vid = escape(s.vault_id),
+        name = escape(s.vault_name),
         err = err,
-        name = escape(d.vault_name),
-        desc = desc_html,
-        secrets_card = secrets_card,
         member_rows = member_rows,
         assign_form = assign_form,
-        rotate = rotate,
-        acl_card = acl_card,
+        acl = escape(&acl_current),
     );
-    layout(d.vault_name, Some(d.username), &body)
+    layout(s.vault_name, Some(s.username), &body)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

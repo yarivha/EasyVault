@@ -3,6 +3,14 @@
 All notable changes to EasyVault are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Changed — vault Settings page
+- Vault management (member access/assign/revoke, network ACL, key rotation) moved
+  off the main vault page onto a dedicated **Settings** page
+  (`/gui/vaults/:id/settings`, master / vault-admin only). The vault page now
+  focuses on secrets, with a **Settings** button for managers.
+
 ## [0.1.4] — 2026-06-20
 
 ### Added — AppRole auth (`/v1/auth/approle/login`)

@@ -130,6 +130,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/gui/vaults/new", get(vault_new_form))
         .route("/gui/vaults", post(vault_create))
         .route("/gui/vaults/{id}", get(vault_detail))
+        .route("/gui/vaults/{id}/settings", get(vault_settings))
         .route("/gui/vaults/{id}/assign", post(vault_assign))
         .route("/gui/vaults/{id}/revoke", post(vault_revoke))
         .route("/gui/vaults/{id}/acl", post(vault_acl_set))
@@ -624,16 +625,16 @@ async fn vault_assign(
         return Ok(access_denied(&keys));
     }
     let Some(role) = Role::parse(form.role.trim()) else {
-        return render_vault_detail(&state, &keys, &vault_id, Some("Invalid role.")).await;
+        return render_vault_settings(&state, &keys, &vault_id, Some("Invalid role.")).await;
     };
 
     let mk = master_key(&state).await?;
     match vault::assign(&state.db, &vault_id, &mk, &form.username, role, &keys.user_id).await {
         Ok(()) => {
             audit_gui(&state, &headers, peer, "GRANT", Some(&vault_id), None, &keys.user_id, 200).await;
-            Ok(Redirect::to(&format!("/gui/vaults/{vault_id}")).into_response())
+            Ok(Redirect::to(&format!("/gui/vaults/{vault_id}/settings")).into_response())
         }
-        Err(AppError::BadRequest(msg)) => render_vault_detail(&state, &keys, &vault_id, Some(&msg)).await,
+        Err(AppError::BadRequest(msg)) => render_vault_settings(&state, &keys, &vault_id, Some(&msg)).await,
         Err(e) => Err(e),
     }
 }
@@ -658,7 +659,7 @@ async fn vault_revoke(
     let mk = master_key(&state).await?;
     vault::revoke(&state.db, &vault_id, &form.user_id, &mk).await?;
     audit_gui(&state, &headers, peer, "REVOKE", Some(&vault_id), None, &keys.user_id, 200).await;
-    Ok(Redirect::to(&format!("/gui/vaults/{vault_id}")).into_response())
+    Ok(Redirect::to(&format!("/gui/vaults/{vault_id}/settings")).into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -678,8 +679,8 @@ async fn vault_acl_set(
     }
     let entries = lines_to_vec(&form.entries);
     match vault::set_acl(&state.db, &vault_id, &entries).await {
-        Ok(()) => Ok(Redirect::to(&format!("/gui/vaults/{vault_id}")).into_response()),
-        Err(AppError::BadRequest(msg)) => render_vault_detail(&state, &keys, &vault_id, Some(&msg)).await,
+        Ok(()) => Ok(Redirect::to(&format!("/gui/vaults/{vault_id}/settings")).into_response()),
+        Err(AppError::BadRequest(msg)) => render_vault_settings(&state, &keys, &vault_id, Some(&msg)).await,
         Err(e) => Err(e),
     }
 }
@@ -703,7 +704,7 @@ async fn vault_rotate(
     let mk = master_key(&state).await?;
     vault::rotate_vault(&state.db, &vault_id, &mk).await?;
     audit_gui(&state, &headers, peer, "ROTATE", Some(&vault_id), None, &keys.user_id, 200).await;
-    render_vault_detail(&state, &keys, &vault_id, Some("Vault key rotated.")).await
+    render_vault_settings(&state, &keys, &vault_id, Some("Vault key rotated.")).await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1064,7 +1065,7 @@ fn lines_to_vec(input: &str) -> Vec<String> {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // render_vault_detail
-// Load a vault's secrets + members and render the detail page (or access pages).
+// Load a vault's secrets and render the detail page (secrets + a Settings link).
 // ─────────────────────────────────────────────────────────────────────────────
 async fn render_vault_detail(
     state: &Arc<AppState>,
@@ -1083,24 +1084,53 @@ async fn render_vault_detail(
     } else {
         Vec::new()
     };
-    let members = vault::members(&state.db, vault_id).await?;
-    let acl_entries = if access.can_assign() {
-        vault::get_acl(&state.db, vault_id).await?
-    } else {
-        Vec::new()
-    };
     Ok(Html(pages::vault_detail_page(pages::VaultDetail {
         username: &keys.username,
         vault_id,
         vault_name: &v.name,
         description: v.description.as_deref().unwrap_or(""),
         secrets: &secret_list,
-        members: &members,
-        current_user_id: &keys.user_id,
-        acl_entries: &acl_entries,
         can_read: access.can_read(),
         can_write: access.can_write(),
         can_assign: access.can_assign(),
+        error,
+    }))
+    .into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /gui/vaults/{id}/settings  +  render_vault_settings
+// Management page (master / vault admins): member access, ACL, key rotation.
+// ─────────────────────────────────────────────────────────────────────────────
+async fn vault_settings(
+    State(state): State<Arc<AppState>>,
+    Path(vault_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    let keys = guard!(auth state headers);
+    guard!(unsealed state, &keys);
+    render_vault_settings(&state, &keys, &vault_id, None).await
+}
+
+async fn render_vault_settings(
+    state: &Arc<AppState>,
+    keys: &SessionKeys,
+    vault_id: &str,
+    error: Option<&str>,
+) -> Result<Response, AppError> {
+    let Some(v) = vault::get(&state.db, vault_id).await? else { return Ok(not_found(keys)); };
+    if !load_access(state, keys, vault_id).await?.can_assign() {
+        return Ok(access_denied(keys));
+    }
+    let members = vault::members(&state.db, vault_id).await?;
+    let acl_entries = vault::get_acl(&state.db, vault_id).await?;
+    Ok(Html(pages::vault_settings_page(pages::VaultSettings {
+        username: &keys.username,
+        vault_id,
+        vault_name: &v.name,
+        members: &members,
+        current_user_id: &keys.user_id,
+        acl_entries: &acl_entries,
         error,
     }))
     .into_response())
