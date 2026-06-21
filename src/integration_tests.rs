@@ -267,6 +267,43 @@ async fn single_use_secret_burns_after_read() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// audit retention: prune removes rows older than the window, keeps recent ones
+// ─────────────────────────────────────────────────────────────────────────────
+#[tokio::test]
+async fn audit_retention_prune() {
+    let db = test_pool().await;
+    let master_key = crypto::random_key();
+
+    // One recent row (via record) + one back-dated row inserted directly.
+    audit::record(
+        &db,
+        &master_key,
+        AuditEntry { operation: "READ", vault_id: None, path: None, actor_type: "system", actor_hash: None, source_ip: None, response_code: 200 },
+    )
+    .await;
+    sqlx::query("INSERT INTO audit_log (request_id, timestamp, operation, actor_type, hmac) VALUES (?, ?, ?, ?, ?)")
+        .bind("old")
+        .bind("2000-01-01T00:00:00+00:00")
+        .bind("READ")
+        .bind("system")
+        .bind("x")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert_eq!(audit::count(&db).await.unwrap(), 2);
+
+    // Default retention = 0 (keep forever) → prune is a no-op.
+    assert_eq!(audit::prune(&db).await.unwrap(), 0);
+    assert_eq!(audit::count(&db).await.unwrap(), 2);
+
+    // 30-day retention → the year-2000 row is removed, the recent one stays.
+    audit::set_retention_days(&db, 30).await.unwrap();
+    assert_eq!(audit::retention_days(&db).await.unwrap(), 30);
+    assert_eq!(audit::prune(&db).await.unwrap(), 1);
+    assert_eq!(audit::count(&db).await.unwrap(), 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AppRole: role + secret-id → login mints a scoped, working per-vault token
 // ─────────────────────────────────────────────────────────────────────────────
 #[tokio::test]

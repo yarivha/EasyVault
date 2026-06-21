@@ -56,6 +56,17 @@ async fn main() -> anyhow::Result<()> {
     // Resolve TLS material before `cfg` is moved into the shared state.
     let tls_pem = if cfg.server.tls { Some(tls::load_or_generate(&cfg)?) } else { None };
 
+    // Background audit-log pruner: prune on startup, then every 6 hours.
+    let prune_db = pool.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = audit::prune(&prune_db).await {
+                tracing::warn!(error = %e, "audit prune failed");
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+        }
+    });
+
     let state = AppState::new(pool, cfg);
     let app = api::build_router(state);
 

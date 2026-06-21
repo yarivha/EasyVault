@@ -126,6 +126,8 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/gui/users/{id}/enable", post(user_enable))
         .route("/gui/account/password", get(password_form).post(password_change))
         .route("/gui/audit", get(audit_view))
+        .route("/gui/audit/retention", post(audit_retention_set))
+        .route("/gui/audit/prune", post(audit_prune_now))
         .route("/gui/seal", post(seal_instance))
         .route("/gui/vaults/new", get(vault_new_form))
         .route("/gui/vaults", post(vault_create))
@@ -688,7 +690,44 @@ async fn audit_view(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     let mk = master_key(&state).await?;
     let rows = audit::list(&state.db, 200).await?;
     let verified: Vec<bool> = rows.iter().map(|r| audit::verify_row(&mk, r)).collect();
-    Ok(Html(pages::audit_page(&keys.username, &rows, &verified)).into_response())
+    let total = audit::count(&state.db).await?;
+    let retention = audit::retention_days(&state.db).await?;
+    Ok(Html(pages::audit_page(&keys.username, &rows, &verified, total, retention)).into_response())
+}
+
+/// Audit retention form (days; 0 = keep forever).
+#[derive(Debug, Deserialize)]
+pub struct RetentionForm {
+    #[serde(default)]
+    pub days: String,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /gui/audit/retention
+// Master sets the audit-log retention window (days) and prunes immediately.
+// ─────────────────────────────────────────────────────────────────────────────
+async fn audit_retention_set(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Form(form): Form<RetentionForm>,
+) -> Result<Response, AppError> {
+    let keys = guard!(auth state headers);
+    guard!(master &keys);
+    let days = form.days.trim().parse::<i64>().unwrap_or(0).max(0);
+    audit::set_retention_days(&state.db, days).await?;
+    audit::prune(&state.db).await?;
+    Ok(Redirect::to("/gui/audit").into_response())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /gui/audit/prune
+// Master prunes the audit log now (per the configured retention).
+// ─────────────────────────────────────────────────────────────────────────────
+async fn audit_prune_now(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Result<Response, AppError> {
+    let keys = guard!(auth state headers);
+    guard!(master &keys);
+    audit::prune(&state.db).await?;
+    Ok(Redirect::to("/gui/audit").into_response())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

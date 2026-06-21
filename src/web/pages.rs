@@ -560,7 +560,7 @@ pub fn vault_settings_page(s: VaultSettings<'_>) -> String {
 // audit_page
 // Master-only audit log viewer; each row shows its HMAC verification status.
 // ─────────────────────────────────────────────────────────────────────────────
-pub fn audit_page(username: &str, rows: &[crate::audit::AuditRow], verified: &[bool]) -> String {
+pub fn audit_page(username: &str, rows: &[crate::audit::AuditRow], verified: &[bool], total: i64, retention_days: i64) -> String {
     let mut body_rows = String::from(
         "<table><tr><th>Time</th><th>Op</th><th>Vault</th><th>Path</th><th>Actor</th>\
          <th>Source IP</th><th>Code</th><th>Integrity</th></tr>",
@@ -591,11 +591,27 @@ pub fn audit_page(username: &str, rows: &[crate::audit::AuditRow], verified: &[b
         ));
     }
     body_rows.push_str("</table>");
+
+    let retention_label = if retention_days <= 0 { "kept forever".to_string() } else { format!("{retention_days} days") };
+    let retention_value = if retention_days <= 0 { String::new() } else { retention_days.to_string() };
     let body = format!(
         "<p><a href=\"/gui/\">&larr; Dashboard</a></p>\
          <div class=\"card\"><h1>Audit log</h1>\
-         <p class=\"muted\">Most recent 200 events. Each row is HMAC-signed with a key derived \
-         from the master key.</p>{rows}</div>",
+         <p class=\"muted\">{total} events total — currently {retention}. Each row is HMAC-signed \
+         with a key derived from the master key.</p>\
+         <form method=\"post\" action=\"/gui/audit/retention\" \
+         style=\"display:flex;gap:8px;align-items:flex-end\">\
+         <div><label style=\"margin-top:0\">Retention (days, blank/0 = keep forever)</label>\
+         <input name=\"days\" type=\"number\" min=\"0\" value=\"{rvalue}\" placeholder=\"forever\" \
+         style=\"width:180px\"></div>\
+         <button type=\"submit\" style=\"margin:0\">Save</button></form>\
+         <form method=\"post\" action=\"/gui/audit/prune\" style=\"margin-top:10px\">\
+         <button type=\"submit\" class=\"btn-neutral\">Prune now</button>\
+         <span class=\"muted\"> — delete events older than the retention window.</span></form></div>\
+         <div class=\"card\"><h2>Most recent 200 events</h2>{rows}</div>",
+        total = total,
+        retention = retention_label,
+        rvalue = escape(&retention_value),
         rows = body_rows,
     );
     layout("Audit log", Some(username), &body)

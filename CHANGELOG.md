@@ -5,6 +5,12 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added — audit-log retention (master only)
+- The master can set an **audit-log retention window** (days; 0/blank = keep
+  forever) on the audit page, with a **Prune now** button. A background task
+  prunes on startup and every 6 hours. Prevents the audit log from growing
+  unbounded. Settings live in a new `settings` table (migration 006).
+
 ### Fixed — deleting a secret
 - A fully-deleted secret no longer lingers in the vault's secret list. The
   listing now excludes paths whose only versions are soft-deleted (it already

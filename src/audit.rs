@@ -7,12 +7,15 @@
 // Secret values are never logged — only paths, actors, IPs and result codes.
 // =============================================================================
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::error::AppError;
+
+/// Settings key for the audit-log retention window, in days (0 = keep forever).
+const RETENTION_KEY: &str = "audit_retention_days";
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -149,6 +152,63 @@ pub async fn list(db: &sqlx::SqlitePool, limit: i64) -> Result<Vec<AuditRow>, Ap
     .fetch_all(db)
     .await?;
     Ok(rows)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// count
+// Total number of rows currently in the audit log.
+// ─────────────────────────────────────────────────────────────────────────────
+pub async fn count(db: &sqlx::SqlitePool) -> Result<i64, AppError> {
+    Ok(sqlx::query_scalar("SELECT COUNT(*) FROM audit_log").fetch_one(db).await?)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// retention_days / set_retention_days
+// Read or set the retention window (days). 0 = keep forever (the default).
+// ─────────────────────────────────────────────────────────────────────────────
+pub async fn retention_days(db: &sqlx::SqlitePool) -> Result<i64, AppError> {
+    let v: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(RETENTION_KEY)
+        .fetch_optional(db)
+        .await?;
+    Ok(v.and_then(|s| s.parse::<i64>().ok()).unwrap_or(0).max(0))
+}
+
+pub async fn set_retention_days(db: &sqlx::SqlitePool, days: i64) -> Result<(), AppError> {
+    let days = days.max(0);
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?, ?) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(RETENTION_KEY)
+    .bind(days.to_string())
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// prune
+// Delete audit rows older than the configured retention window. No-op when
+// retention is 0 (keep forever). Returns how many rows were removed.
+// ─────────────────────────────────────────────────────────────────────────────
+pub async fn prune(db: &sqlx::SqlitePool) -> Result<u64, AppError> {
+    let days = retention_days(db).await?;
+    if days <= 0 {
+        return Ok(0);
+    }
+    // Both stored timestamps and this cutoff are RFC3339 (UTC, +00:00), so a
+    // lexicographic comparison is chronologically correct.
+    let cutoff = (Utc::now() - Duration::days(days)).to_rfc3339();
+    let res = sqlx::query("DELETE FROM audit_log WHERE timestamp < ?")
+        .bind(cutoff)
+        .execute(db)
+        .await?;
+    let removed = res.rows_affected();
+    if removed > 0 {
+        tracing::info!(removed, days, "pruned audit log");
+    }
+    Ok(removed)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
