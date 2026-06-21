@@ -3,7 +3,7 @@
 All notable changes to EasyVault are documented here.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.1.6] — 2026-06-21
 
 ### Added — read-only tokens & AppRoles
 - Tokens and AppRoles can be created **read-only** or **read-write** (Access
@@ -324,6 +324,7 @@ HMAC audit log, vault-key rotation, TLS, and a fully browser-based bootstrap.
   secret read/write → API-token REST access → IP ACL → audit + tamper detection
   → key rotation, over both HTTP and TLS.
 
+[0.1.6]: https://github.com/yarivha/EasyVault/releases/tag/v0.1.6
 [0.1.5]: https://github.com/yarivha/EasyVault/releases/tag/v0.1.5
 [0.1.4]: https://github.com/yarivha/EasyVault/releases/tag/v0.1.4
 [0.1.3]: https://github.com/yarivha/EasyVault/releases/tag/v0.1.3
